@@ -205,3 +205,17 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# I'm keeping _asynciomodule.c Versions in this folder as reference
+# These are straight up copies of CPython's things throw me an issue
+# if you think I should show all these and not ignore this folder
+# simply running wget or curl will give you the files by default
+# They are stored as filenames
+# .references/_asynciomodule_<Python Version>.c  
+# I carry 3.9 - 3.13 (Might do 3.14 in the future) 
+# https://raw.githubusercontent.com/python/cpython/refs/heads/3.9/Modules/_asynciomodule.c
+# all downloaded of offline use so that I could do this offline.
+.references
+
+# Needed
+.vscode

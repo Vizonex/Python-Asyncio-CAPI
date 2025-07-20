@@ -218,7 +218,7 @@ PyObject* asyncio_InvalidStateError;
 PyObject* asyncio_CancelledError;
 
 
-UV_IDENTIFIER(call_soon);
+CASYNCIO_IDENTIFIER(call_soon);
 
 // TODO: Check 3.9-3.13 for anything else...
 
