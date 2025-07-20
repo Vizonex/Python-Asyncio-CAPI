@@ -35,6 +35,11 @@
  *   - More or less the same idea
  * */
 
+/*
+ * It is on my todolist to transform parts into a capsule styled apporch for the global objects
+ */
+
+
 #include <Python.h>
 #include <stdint.h>
 
@@ -53,7 +58,7 @@ typedef enum {
 } fut_state;
 
 // Different Python versions Laid out as Hex Values
-// They are made to simplify saying if 3.XX >= ...
+// I made Macros to simplify saying if 3.XX >= ... or 3.XX+
 
 #if (PY_VERSION_HEX >= 0x030a00f0)
 #define CASYNCIO_PYTHON_310
@@ -218,12 +223,17 @@ PyObject* asyncio_InvalidStateError;
 PyObject* asyncio_CancelledError;
 
 
+PyTypeObject* FutureType; /* _asyncio.Future */
+PyTypeObject* TaskType; /* _asyncio.Task */
+
 CASYNCIO_IDENTIFIER(call_soon);
 
-// TODO: Check 3.9-3.13 for anything else...
+// TODO: Check 3.9-3.13 for anything else or code-changes
+
 
 static int 
 Loop_CallSoon(PyObject* loop, PyObject* func, PyObject* arg, PyObject* ctx){
+#ifndef CASYNCIO_PYTHON_311
     PyObject *handle;
     PyObject *stack[3];
     Py_ssize_t nargs;
@@ -258,6 +268,41 @@ Loop_CallSoon(PyObject* loop, PyObject* func, PyObject* arg, PyObject* ctx){
     }
     Py_DECREF(handle);
     return 0;
+#else /* 3.12+ */
+    /* IDK if _Py_ID or any functionality is Private to CPython only 
+       Feel free to throw an issue on github if you find something 
+       Unaccessable or requires new objects or macros to be added.
+    */
+    PyObject *handle;
+
+    if (ctx == NULL) {
+        PyObject *stack[] = {loop, func, arg};
+        size_t nargsf = 3 | PY_VECTORCALL_ARGUMENTS_OFFSET;
+        handle = PyObject_VectorcallMethod(&_Py_ID(call_soon), stack, nargsf, NULL);
+    }
+    else {
+        /* All refs in 'stack' are borrowed. */
+        PyObject *stack[4];
+        size_t nargs = 2;
+        stack[0] = loop;
+        stack[1] = func;
+        if (arg != NULL) {
+            stack[2] = arg;
+            nargs++;
+        }
+        stack[nargs] = (PyObject *)ctx;
+        size_t nargsf = nargs | PY_VECTORCALL_ARGUMENTS_OFFSET;
+        handle = PyObject_VectorcallMethod(&_Py_ID(call_soon), stack, nargsf,
+                                           context_kwname);
+    }
+
+    if (handle == NULL) {
+        return -1;
+    }
+    Py_DECREF(handle);
+    return 0;
+#endif
+
 }
 
 // NOTE: FutureObj_GetLoop could be inlined in a pxd file so I didn't write it
@@ -401,12 +446,16 @@ FutureObj_SetResult(FutureObj *fut, PyObject *res)
         PyErr_SetString(asyncio_InvalidStateError, "invalid state");
         return -1;
     }
-
     assert(!fut->fut_result);
+
+    #ifndef CASYNCIO_PYTHON_312
+    /* 3.9 - 3.11 */
     Py_INCREF(res);
     fut->fut_result = res;
+    #else /* 3.12+ */
+    fut->fut_result = Py_NewRef(res);
+    #endif
     fut->fut_state = STATE_FINISHED;
-
     if (FutureObj_ScheduleCallbacks(fut) == -1) {
         return -1;
     }
@@ -467,13 +516,47 @@ FutureObj_SetException(FutureObj *fut, PyObject *exc)
     return 0;
 }
 
+/* Combined create_cancelled_error + future_set_cancelled_error 
+ * to be more optimized and organized */
+
 static void
 FutureObj_SetCancelledError(FutureObj* fut){
-    PyObject* exc = PyObject_CallNoArgs(asyncio_CancelledError);
+
+   
+    #ifdef CASYNCIO_PYTHON_311
+    /* 3.11+ */
+    PyObject *exc;
+    if (fut->fut_cancelled_exc != NULL) {
+        /* transfer ownership */
+        exc = fut->fut_cancelled_exc;
+        fut->fut_cancelled_exc = NULL;
+        return exc;
+    }
+    PyObject *msg = fut->fut_cancel_msg;
+    if (msg == NULL || msg == Py_None) {
+        exc = PyObject_CallNoArgs(asyncio_CancelledError);
+    } else {
+        exc = PyObject_CallOneArg(asyncio_CancelledError, msg);
+    }
+    if (exc == NULL){
+        return;
+    }
+    PyErr_SetObject(asyncio_CancelledError, exc);
+    Py_DECREF(exc);
+
+    #else /* 3.9 - 3.10 */
+    PyObject *exc, *msg;
+    msg = fut->fut_cancel_msg;
+    if (msg == NULL || msg == Py_None) {
+        exc = PyObject_CallNoArgs(asyncio_CancelledError);
+    } else {
+        exc = PyObject_CallOneArg(asyncio_CancelledError, msg);
+    }
     PyErr_SetObject(asyncio_CancelledError, exc);
     /* were done using the exception object so release... */
     Py_DECREF(exc);
     _PyErr_ChainStackItem(&fut->fut_cancelled_exc);
+    #endif
 }
 
 static int 
@@ -491,7 +574,7 @@ FutureObj_GetResult(FutureObj* fut, PyObject** result){
             return -1;
         }
         
-        default: {
+        case STATE_FINISHED: {
             fut->fut_log_tb = 0;
             if (fut->fut_exception != NULL){
                 Py_INCREF(fut->fut_exception);
@@ -502,6 +585,9 @@ FutureObj_GetResult(FutureObj* fut, PyObject** result){
             *result = fut->fut_result;
             return 0;
         }
+        default:
+            /* UNREACHABLE, IF REACHED, YOU SCREWED UP BADLY!!! */
+            assert(0);
     }
 }
 
@@ -577,6 +663,54 @@ FutureObj_Cancel(FutureObj* fut, PyObject* msg){
     return (FutureObj_ScheduleCallbacks(fut) < 0) ? -1: 1;
 }
 
+// This function is a combined version of __new__ & __init__
+// It's assumed asynciomodule.c already tied these objects together.
+// This will also take care of the costly calls & globals and lets asynciomodule.c 
+// do the heavy lifiting for us. 
+// WARNING: IF LOOP IS NULL THIS FUNCTION IS COSTLY AND MAY CAP PERFORAMANCE BENEFITS!!!
+
+static PyObject* 
+FutureObj_New(PyObject* loop){
+    PyObject* fut = FutureType->tp_alloc(FutureType, 0);
+    if (fut == NULL) {
+        return NULL;
+    }
+    Py_INCREF(fut);
+    if (loop == NULL){
+        return (FutureType->tp_init(fut, NULL, NULL) < 0) ? NULL : fut;
+    }
+    PyObject* args = PyTuple_Pack(1, loop);
+    if (args == NULL){
+        /* FAIL */
+        goto fail;
+    }
+    Py_INCREF(args);
+    int ret = FutureType->tp_init(fut, args, NULL);
+    Py_CLEAR(args);
+    if (ret < 0){
+        /* Init Error */
+        goto fail;
+    }
+    /* Success */
+    return fut;
+fail:
+    Py_CLEAR(fut);
+    return NULL;
+}
+
+// Returns -1 if future is NULL as an aggressive safety-measure
+static int 
+FutureObj_IsDone(FutureObj* fut){
+    return (fut == NULL) ? -1 : fut->fut_state == STATE_FINISHED;
+}
+
+static int 
+FutureObj_IsCancelled(FutureObj* fut){
+    return (fut == NULL) ? -1 : fut->fut_state == STATE_CANCELLED;
+}
+
+
+ 
 
 
 #ifdef __cplusplus

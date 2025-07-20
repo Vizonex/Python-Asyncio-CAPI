@@ -19,3 +19,6 @@ file I am slowly editing that currently supports 3.9 and above.
 
 It is likely that this could eventually become a Cython Library on Pypi however but we shall see...
  
+
+Currently I've mainly taken intrest in doing the _asyncio.Future Object but maybe we can look into implementing _asyncio.Task later
+just depends on how much winloop utilizes task stepping.
