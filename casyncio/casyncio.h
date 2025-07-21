@@ -35,9 +35,6 @@
  *   - More or less the same idea
  * */
 
-/*
- * It is on my todolist to transform parts into a capsule styled apporch for the global objects
- */
 
 
 #include <Python.h>
@@ -218,9 +215,9 @@ from leaking through
 // ==================================== GLOBALS ====================================
 
 // TODO: Any globals we borrow should be setup in a hacky import_XX function later...
-PyObject* context_kwname;
-PyObject* asyncio_InvalidStateError;
-PyObject* asyncio_CancelledError;
+PyObject* context_kwname; /* "context" in unicode */
+PyObject* asyncio_InvalidStateError; /* asyncio.CancelledError */
+PyObject* asyncio_CancelledError; /* asyncio.CancelledError */
 
 
 PyTypeObject* FutureType; /* _asyncio.Future */
@@ -586,7 +583,7 @@ FutureObj_GetResult(FutureObj* fut, PyObject** result){
             return 0;
         }
         default:
-            /* UNREACHABLE, IF REACHED, YOU SCREWED UP BADLY!!! */
+            /* UNREACHABLE */
             assert(0);
     }
 }
@@ -650,7 +647,7 @@ FutureObj_AddDoneCallback(FutureObj *fut, PyObject *arg, PyObject *ctx)
 // 0 = fail
 // -1 = error
 static int 
-FutureObj_Cancel(FutureObj* fut, PyObject* msg){
+FutureObj_CancelWithMessage(FutureObj* fut, PyObject* msg){
     fut->fut_log_tb = 0;
 
     if (fut->fut_state != STATE_PENDING) {
@@ -663,11 +660,25 @@ FutureObj_Cancel(FutureObj* fut, PyObject* msg){
     return (FutureObj_ScheduleCallbacks(fut) < 0) ? -1: 1;
 }
 
+// Cancel Future with No Message it will be set as NULL.
+static int 
+FutureObj_Cancel(FutureObj* fut){
+    fut->fut_log_tb = 0;
+
+    if (fut->fut_state != STATE_PENDING) {
+        return 0;
+    }
+    fut->fut_state = STATE_CANCELLED;
+    fut->fut_cancel_msg = NULL;
+    return (FutureObj_ScheduleCallbacks(fut) < 0) ? -1: 1;
+}
+
 // This function is a combined version of __new__ & __init__
 // It's assumed asynciomodule.c already tied these objects together.
 // This will also take care of the costly calls & globals and lets asynciomodule.c 
 // do the heavy lifiting for us. 
 // WARNING: IF LOOP IS NULL THIS FUNCTION IS COSTLY AND MAY CAP PERFORAMANCE BENEFITS!!!
+// WARNING: This is not a good idea if you have a cutsom task-factory in action!
 
 static PyObject* 
 FutureObj_New(PyObject* loop){
@@ -698,6 +709,10 @@ fail:
     return NULL;
 }
 
+// Can be slower but beneficial when code can't directly get to the current eventloop.
+#define FutureObj_NewNoArgs() FutureObj_New(NULL);
+
+
 // Returns -1 if future is NULL as an aggressive safety-measure
 static int 
 FutureObj_IsDone(FutureObj* fut){
@@ -710,7 +725,78 @@ FutureObj_IsCancelled(FutureObj* fut){
 }
 
 
- 
+
+/* ============================== MODULE IMPORT ============================== */
+/* This is the main function involved in obtaining all required globals 
+Currently there is no implementation for a Python Capsule as no module is 
+required currently however that doesn't mean there's a catch. 
+We still need the globals otherwise they will all be NULL and cause an immediate 
+segfault and I can't save you if you fail to do this simple but important step!
+*/
+
+
+/* Imports c-asyncio globals 
+
+Exteremely important you do first thing in any application even in C itself and is not
+limited to just cython. returns 0 if success, -1 on failure.
+
+*/
+static int 
+Import_CAsyncio(){
+    PyObject *module = NULL;
+    // Import as Python Objects and then recast to Types...
+    PyObject *FutureTypeObj;
+    PyObject *TaskTypeObj;
+
+// From CPython's WITH_MOD / GET_MOD_ATTR Macros
+
+#define CASYNCIO_WITH_MOD(NAME) \
+    Py_CLEAR(module); \
+    module = PyImport_ImportModule(NAME); \
+    if (module == NULL) { \
+        goto fail; \
+    }
+
+#define CASYNCIO_GET_MOD_ATTR(VAR, NAME) \
+    VAR = PyObject_GetAttrString(module, NAME); \
+    if (VAR == NULL) { \
+        goto fail; \
+    }
+
+    context_kwname = Py_BuildValue("(s)", "context");
+    if (context_kwname == NULL) {
+        goto fail;
+    }
+
+    CASYNCIO_WITH_MOD("asyncio.exceptions")
+    CASYNCIO_GET_MOD_ATTR(asyncio_InvalidStateError, "InvalidStateError")
+    CASYNCIO_GET_MOD_ATTR(asyncio_CancelledError, "CancelledError")
+
+    /* Yank the target Module were hacking objects from 
+     * If _asyncio was not compiled on the target system 
+     * Everything I invented fails. */
+
+    CASYNCIO_WITH_MOD("_asyncio")
+
+    /* _asyncio.Future */
+    CASYNCIO_GET_MOD_ATTR(FutureTypeObj, "Future");
+    
+    /* _asyncio.Task */
+    CASYNCIO_GET_MOD_ATTR(TaskTypeObj, "Task");
+    
+
+
+fail:
+
+    Py_CLEAR(context_kwname);
+    Py_CLEAR(asyncio_InvalidStateError);
+    Py_CLEAR(asyncio_CancelledError);
+
+    Py_CLEAR(FutureType); /* _asyncio.Future */
+    Py_CLEAR(TaskType); /* _asyncio.Task */
+
+    return -1;
+}
 
 
 #ifdef __cplusplus

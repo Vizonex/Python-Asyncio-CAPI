@@ -1,0 +1,11 @@
+[project]
+name = "c-asyncio"
+version = "0.1.0"
+description = "A C-API utility hack to make asyncio avalible in CPython & Cython"
+authors = [
+    { name = "Vizonex", email = "VizonexBusiness@gmail.com" }
+]
+requires-python = ">=3.9"
+dependencies = []
+
+
