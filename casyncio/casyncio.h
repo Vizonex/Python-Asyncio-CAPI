@@ -713,15 +713,14 @@ fail:
 #define FutureObj_NewNoArgs() FutureObj_New(NULL);
 
 
-// Returns -1 if future is NULL as an aggressive safety-measure
 static int 
 FutureObj_IsDone(FutureObj* fut){
-    return (fut == NULL) ? -1 : fut->fut_state == STATE_FINISHED;
+    return fut->fut_state == STATE_FINISHED;
 }
 
 static int 
 FutureObj_IsCancelled(FutureObj* fut){
-    return (fut == NULL) ? -1 : fut->fut_state == STATE_CANCELLED;
+    return fut->fut_state == STATE_CANCELLED;
 }
 
 
